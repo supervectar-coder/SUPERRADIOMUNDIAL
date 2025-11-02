@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>SUPERVECTAR RADIOS MUNDIALES</title>
+<style>
+body{
+  font-family:system-ui;
+  margin:0;
+  padding:16px;
+  display:grid;
+  gap:12px;
+  grid-template-columns: 340px 1fr;
+  height:100vh;
+  box-sizing:border-box;
+  background:#121212;
+  color:#f7eb02;
+}
+header{
+  grid-column:1/-1; 
+  display:flex; 
+  align-items:center; 
+  gap:12px;
+}
+header img.logo { width: 40px; height: 40px; object-fit: contain; border-radius: 6px; }
+h1{font-size:20px; margin:0;}
+.left{ overflow:auto; border:1px solid #333; padding:8px; border-radius:8px; background:#1e1e1e; }
+.search{margin-bottom:8px;}
+ul.channel-list{list-style:none; padding:0; margin:0;}
+li.channel{padding:6px; border-bottom:1px solid #333;}
+li.channel:hover{background:#2a2a2a;}
+li.channel.active{background:#333;}
+li.channel.active .channel-title{color:#4caf50;}
+button.active-btn{background:#4caf50 !important; color:#fff;}
+.title-line{display:flex; align-items:center; gap:6px; justify-content:space-between;}
+.channel-info{display:flex; align-items:center; gap:6px; flex:1;}
+.channel-info img{width:26px; height:26px; object-fit:contain; border-radius:4px; background:#333;}
+.channel-title{font-size:14px; flex:1;}
+.group-header{
+  font-weight:600;
+  padding:6px;
+  margin-top:6px;
+  background:#2b2b2b;
+  border-radius:6px;
+  cursor:pointer;
+  user-select:none;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+}
+.group-header:hover{background:#3a3a3a;}
+.group-channels{margin:0; padding-left:0; max-height:300px; overflow:auto; display:none;}
+.group-channels.open{display:block;}
+.right{display:flex; flex-direction:column; gap:12px;}
+.audio-container{width:100%; padding:20px; background:#1e1e1e; border-radius:12px; position:relative;}
+audio{width:100%; outline:none; border-radius:12px;}
+.note{font-size:13px; color:#aaa;}
+.error{color:#ff5252}
+footer{grid-column:1/-1; font-size:13px; color:#888;}
+select{width:100%; padding:6px; margin-bottom:8px; border-radius:6px; border:none; background:#2b2b2b; color:#f7eb02;}
+#loading{
+  position:absolute; top:50%; left:50%; transform:translate(-50%, -50%);
+  font-size:18px; color:#f7eb02;
+}
+</style>
+</head>
+<body>
+<header>
+  <img src="http://i.ibb.co/FnGwW1c/Logo.png" alt="Logo" class="logo" />
+  <h1>SUPERVECTAR RADIOS MUNDIALES</h1>
+</header>
+
+<div class="left">
+  <div class="search">
+    <input id="filter" type="text" placeholder="Buscar canales..." disabled />
+  </div>
+  <div>
+    <select id="countryFilter">
+      <option value="">Cargando países...</option>
+    </select>
+  </div>
+  <div id="groups"></div>
+</div>
+
+<div class="right">
+  <div>
+    <div id="current-title" style="font-weight:700; font-size:16px;">→ Selecciona un canal</div>
+    <div class="note" id="current-info"></div>
+  </div>
+  <div class="audio-container">
+    <div id="loading" style="display:none">⏳ Cargando...</div>
+    <audio id="player" controls preload="none"></audio>
+  </div>
+  <div>
+    <div id="status" class="note">Estado: listo</div>
+    <div id="error" class="error" style="display:none"></div>
+  </div>
+</div>
+
+<footer>
+  SUPERVECTAR RADIOS MUNDIALES.
+</footer>
+
+<script>
+(async function(){
+const groupsContainer=document.getElementById('groups');
+const player=document.getElementById('player');
+const currentTitle=document.getElementById('current-title');
+const currentInfo=document.getElementById('current-info');
+const status=document.getElementById('status');
+const errorBox=document.getElementById('error');
+const filterInput=document.getElementById('filter');
+const countrySelect=document.getElementById('countryFilter');
+const loading=document.getElementById('loading');
+
+let allStations=[]; // todas las emisoras
+let filteredStations=[]; // estaciones filtradas por búsqueda
+let activeButton=null;
+let activeLi=null;
+const ITEMS_PER_LOAD=50;
+
+// Cargar lista de países
+async function loadCountries(){
+    try{
+        const resp=await fetch('https://de1.api.radio-browser.info/json/countries');
+        const countries=await resp.json();
+        countrySelect.innerHTML='<option value="">Todos los países</option>';
+        countries.sort((a,b)=>a.name.localeCompare(b.name)).forEach(c=>{
+            const opt=document.createElement('option'); opt.value=c.name; opt.textContent=c.name;
+            countrySelect.appendChild(opt);
+        });
+        filterInput.disabled=false;
+        // Cargar todas las emisoras globalmente en segundo plano
+        loadAllStations();
+    }catch(e){
+        countrySelect.innerHTML='<option value="">Error al cargar países</option>';
+    }
+}
+
+// Cargar todas las emisoras globalmente (búsqueda y lazy load global)
+async function loadAllStations(){
+    try{
+        status.textContent='Cargando emisoras del mundo...';
+        loading.style.display='block';
+        const resp=await fetch('https://de1.api.radio-browser.info/json/stations');
+        const stations=await resp.json();
+        allStations=stations.map(s=>({
+            title:s.name,
+            titleLower:s.name.toLowerCase(),
+            url:s.url,
+            logo:s.favicon||null,
+            group:s.country||"Otros"
+        }));
+        filteredStations=allStations;
+        renderGroups(filteredStations);
+        status.textContent=`Lista cargada: ${filteredStations.length} emisoras`;
+        loading.style.display='none';
+        // Última emisora
+        const last=localStorage.getItem('lastStation');
+        if(last){
+            const lastStation=JSON.parse(last);
+            const match=allStations.find(s=>s.url===lastStation.url);
+            if(match) playStream(match,null,null);
+        }
+    }catch(e){
+        status.textContent='Error al cargar emisoras';
+        errorBox.style.display='block';
+        errorBox.textContent=e.message;
+        loading.style.display='none';
+    }
+}
+
+// Renderizar grupos con lazy load
+function renderGroups(items){
+    groupsContainer.innerHTML='';
+    const grouped={};
+    items.forEach(it=>{
+        const groupName=it.group||"Otros";
+        if(!grouped[groupName]) grouped[groupName]=[];
+        grouped[groupName].push(it);
+    });
+
+    Object.keys(grouped).sort().forEach(groupName=>{
+        const header=document.createElement('div');
+        header.className='group-header';
+        header.textContent=groupName;
+        const arrow=document.createElement('span'); arrow.textContent="▼";
+        header.appendChild(arrow);
+
+        const ul=document.createElement('ul'); ul.className='group-channels';
+        ul.dataset.loaded=0;
+        const stations=grouped[groupName];
+
+        function loadMore(){
+            const start=Number(ul.dataset.loaded);
+            const end=start+ITEMS_PER_LOAD;
+            stations.slice(start,end).forEach(it=>{
+                const li=document.createElement('li'); li.className='channel';
+                const div=document.createElement('div'); div.className='title-line';
+                const infoDiv=document.createElement('div'); infoDiv.className='channel-info';
+                const img=document.createElement('img'); img.src=it.logo||'https://via.placeholder.com/26x26?text=🎵';
+                img.onerror=()=>img.src='https://via.placeholder.com/26x26?text=🎵';
+                infoDiv.appendChild(img);
+                const span=document.createElement('div'); span.className='channel-title'; span.textContent=it.title;
+                infoDiv.appendChild(span); div.appendChild(infoDiv);
+                const playBtn=document.createElement('button'); playBtn.textContent="▶"; playBtn.title="Reproducir canal";
+                playBtn.onclick=()=>playStream(it,playBtn,li);
+                div.appendChild(playBtn); li.appendChild(div); ul.appendChild(li);
+            });
+            ul.dataset.loaded=Math.min(end,stations.length);
+        }
+
+        ul.addEventListener('scroll',()=>{
+            if(ul.scrollTop + ul.clientHeight >= ul.scrollHeight-10 && Number(ul.dataset.loaded)<stations.length) loadMore();
+        });
+
+        header.onclick=()=>{
+            ul.classList.toggle('open');
+            arrow.textContent=ul.classList.contains('open')?"▲":"▼";
+            if(ul.classList.contains('open') && Number(ul.dataset.loaded)===0) loadMore();
+        };
+
+        groupsContainer.appendChild(header);
+        groupsContainer.appendChild(ul);
+    });
+}
+
+// Reproducir stream
+function playStream(item,btn,li){
+    if(activeButton) activeButton.classList.remove('active-btn');
+    if(activeLi) activeLi.classList.remove('active');
+    if(btn) btn.classList.add('active-btn');
+    if(li) li.classList.add('active');
+    activeButton=btn; activeLi=li;
+
+    currentTitle.textContent=item.title;
+    currentInfo.textContent="Stream activo";
+    errorBox.style.display='none';
+    status.textContent="Cargando...";
+    loading.style.display='block';
+    localStorage.setItem('lastStation',JSON.stringify(item));
+
+    player.src=item.url;
+    player.play().then(()=>{status.textContent="Reproduciendo...";loading.style.display='none';})
+    .catch(err=>{status.textContent="Error de reproducción"; errorBox.style.display='block'; errorBox.textContent=err.message; loading.style.display='none';});
+}
+
+// Filtrado global por búsqueda
+filterInput.oninput=()=>{
+    const query=filterInput.value.toLowerCase();
+    filteredStations=allStations.filter(s=>s.titleLower.includes(query));
+    renderGroups(filteredStations);
+};
+
+// Filtrado por país
+countrySelect.onchange=()=>{
+    const country=countrySelect.value;
+    filteredStations=country? allStations.filter(s=>s.group===country) : allStations;
+    renderGroups(filteredStations);
+};
+
+player.addEventListener("playing",()=>status.textContent="Reproduciendo...");
+player.addEventListener("waiting",()=>status.textContent="Cargando...");
+player.addEventListener("error",()=>{ status.textContent="Error de reproducción"; errorBox.style.display='block'; errorBox.textContent="El stream no está disponible o tiene bloqueo CORS"; loading.style.display='none'; });
+
+loadCountries();
+})();
+</script>
+</body>
+</html>
